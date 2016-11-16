@@ -82,21 +82,32 @@ final class OGNLShortcutExpression {
         final ICache<ExpressionCacheKey, Object> expressionCache = (cacheManager == null? null : cacheManager.getExpressionCache());
 
         Object target = root;
+        Class<?> targetClass = OgnlRuntime.getTargetClass(target);
+
         for (final String propertyName : this.expressionLevels) {
 
-            // If target is null, we will mimic what OGNL does in these cases...
+
             if (target == null) {
+                if (bypassOgnlShortcut(targetClass)) {
+                    // If a handler was registered for the class, let the expression evaluator default to normal OGNL
+                    // evaluation.
+                    // This attempts to prevent null exceptions encountered in children of expressions
+                    // (ex: ${notNull.notNull.null.notNull})
+                    throw new OGNLShortcutExpression.OGNLShortcutExpressionNotApplicableException();
+                }
+
+                // If target is null, we will mimic what OGNL does in these cases...
                 throw new OgnlException("source is null for getProperty(null, \"" + propertyName + "\")");
             }
 
             // For the best integration possible, we will ask OGNL which property accessor it would use for
             // this target object, and then depending on the result apply our equivalent or just default to
             // OGNL evaluation if it is a custom property accessor we do not implement.
-            final Class<?> targetClass = OgnlRuntime.getTargetClass(target);
+            targetClass = OgnlRuntime.getTargetClass(target);
             final PropertyAccessor ognlPropertyAccessor = OgnlRuntime.getPropertyAccessor(targetClass);
 
             // Depending on the returned OGNL property accessor, we will try to apply ours
-            if (target instanceof Class<?>) {
+            if(target instanceof Class) {
 
                 // Because of the way OGNL works, the "OgnlRuntime.getTargetClass(...)" of a Class object is the class
                 // object itself, so we might be trying to apply a PropertyAccessor to a Class instead of a real object,
@@ -141,7 +152,13 @@ final class OGNLShortcutExpression {
                 // default to normal OGNL evaluation.
                 throw new OGNLShortcutExpressionNotApplicableException();
             }
+        }
 
+        if(target == null && bypassOgnlShortcut(targetClass)) {
+            // This is expected to happen when the first element in an expression is null.
+            // This could be user error, but most likely it occurs when using selection expressions
+            // *{null}
+            throw new OGNLShortcutExpression.OGNLShortcutExpressionNotApplicableException();
         }
 
         return target;
@@ -161,8 +178,8 @@ final class OGNLShortcutExpression {
                 context != null && context.containsKey(OGNLContextPropertyAccessor.RESTRICT_REQUEST_PARAMETERS)) {
             throw new OgnlException(
                     "Access to variable \"" + propertyName + "\" is forbidden in this context. Note some restrictions apply to " +
-                    "variable access. For example, accessing request parameters is forbidden in preprocessing and " +
-                    "unescaped expressions, and also in fragment inclusion specifications.");
+                            "variable access. For example, accessing request parameters is forbidden in preprocessing and " +
+                            "unescaped expressions, and also in fragment inclusion specifications.");
         }
 
         // 'execInfo' translation from context variable to expression object - deprecated and to be removed in 3.1
@@ -196,17 +213,24 @@ final class OGNLShortcutExpression {
         if ("execInfo".equals(propertyName)) {
             LOGGER.warn(
                     "[THYMELEAF][{}] Found Thymeleaf Standard Expression containing a call to the context variable " +
-                    "\"execInfo\" (e.g. \"${execInfo.templateName}\"), which has been deprecated. The " +
-                    "Execution Info should be now accessed as an expression object instead " +
-                    "(e.g. \"${#execInfo.templateName}\"). Deprecated use is still allowed, but will be removed " +
-                    "in future versions of Thymeleaf.",
+                            "\"execInfo\" (e.g. \"${execInfo.templateName}\"), which has been deprecated. The " +
+                            "Execution Info should be now accessed as an expression object instead " +
+                            "(e.g. \"${#execInfo.templateName}\"). Deprecated use is still allowed, but will be removed " +
+                            "in future versions of Thymeleaf.",
                     TemplateEngine.threadIndex());
             return context.get("execInfo");
         }
         return null;
     }
 
-
+    /**
+     * Determines whether thymeleaf OGNL shortcut should be bypassed.  It is reasonable to expect that this method
+     * will grow and new situations are encountered.
+     * @return true - should be bypassed
+     */
+    public static boolean bypassOgnlShortcut(Class targetClass) throws OgnlException {
+        return (OgnlRuntime.getNullHandler(targetClass) != null);
+    }
 
     private static Object getObjectProperty(
             final ICache<ExpressionCacheKey,Object> expressionCache, final String propertyName, final Object target) {
